@@ -1,11 +1,10 @@
 {
   "name": "ktwo",
-  "version": "0.1.1-alpha",
+  "version": "0.1.2-alpha",
   "description": "Simple CLI wrapper around the kdbxweb library of the awesome keeweb!",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node index.js"
   },
   "repository": {
     "type": "git",
@@ -18,18 +17,14 @@
   ],
   "author": "Cory Sabol",
   "license": "MIT",
-  "bugs": {
-    "url": "https://github.com/corysabol/ktwo/issues"
-  },
-  "homepage": "https://github.com/corysabol/ktwo#readme",
   "dependencies": {
     "aws-sdk": "^2.696.0",
     "chalk": "^4.1.0",
     "clui": "^0.3.6",
-    "commander": "^5.1.0",
+    "commander": "^7.1.0",
     "configstore": "^5.0.1",
     "figlet": "^1.4.0",
-    "inquirer": "^7.1.0",
+    "inquirer": "^8.0.0",
     "kdbxweb": "^1.9.0"
   },
   "bin": {

@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
@@ -23,7 +22,7 @@ kdbxweb.CryptoEngine.argon2 = argon2;
 // that returns a promise.
 
 /**
- * Pulls a database and it's respective configuration file from the given s3 url.
+ * Pulls a database and its respective configuration file from the given s3 url.
  * @param {string} s3url - the S3 URL to the db key in S3 e.g. s3://mybucket/k2/mydb
  * @return {Promise}
  */
@@ -71,13 +70,6 @@ function syncS3(db, config) {
   return Promise.all([dbUploadPromise, configUploadPromise]);
 }
 
-function getRandomPass() {}
-
-function findGroup() {}
-
-function listGroup() {}
-
-function findEntry() {}
 
 /**
  * Handle merging a local and remote version of a database
@@ -251,7 +243,7 @@ program
 program
   .command('sync <dbname>')
   .alias('s')
-  .description('manually push a db file to it\'s configured S3 bucket')
+  .description('manually push a db file to its configured S3 bucket')
   .option('-s --bucket <bucket>', 'override the configured S3 url with the one supplied to this flag - s3://bucket-name')
   .action(async (dbname, options) => {
     if (options.bucket) {
