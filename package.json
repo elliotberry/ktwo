@@ -1,6 +1,6 @@
 {
-  "name": "ktwo",
-  "version": "0.1.2-alpha",
+  "name": "kthree",
+  "version": "0.1.2",
   "description": "Simple CLI wrapper around the kdbxweb library of the awesome keeweb!",
   "main": "index.js",
   "scripts": {

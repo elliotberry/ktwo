@@ -11,8 +11,8 @@ const argon2 = require('kdbxweb/test/test-support/argon2');
 const ConfigStore = require('configstore');
 const AWS = require('aws-sdk');
 const s3 = new AWS.S3();
+const {version, name} = require('./package.json')
 
-const PKG_NAME = 'ktwo';
 
 // hacky use of the test implementation of argon2 found in kdbxweb
 kdbxweb.CryptoEngine.argon2 = argon2;
@@ -152,7 +152,7 @@ function askPassword(prompt) {
   return inquirer.prompt(questions);
 }
 
-program.version('0.1.0');
+program.version(version);
 program
   .command('list <dbname>')
   .alias('l')
@@ -216,7 +216,7 @@ program
         const dbPath = path.join(process.env.HOME, '.config', 'configstore', dbname + '.kdbx');
         const configPath = path.join(process.env.HOME, '.config', 'configstore', 'k2' + dbname + '.json');
         const config = new ConfigStore(
-          `${PKG_NAME}-${dbname}`,
+          `${name}-${dbname}`,
           JSON.parse(kdbxweb.ByteUtils.bytesToString(configData.Body))
         );
         if (
@@ -252,9 +252,9 @@ program
       );
     }
     const dbpath = path.join(process.env.HOME, '.config', 'configstore', dbname + '.kdbx');
-    const config = new ConfigStore(`${PKG_NAME}-${dbname}`);
+    const config = new ConfigStore(`${name}-${dbname}`);
     const db = fs.readFileSync(dbpath);
-    const s3path = `${config.get('syncBucket')}/${PKG_NAME}/${dbname.split('.')[0]}`;
+    const s3path = `${config.get('syncBucket')}/${name}/${dbname.split('.')[0]}`;
     const password = await askPassword('Enter the database password:');
     const credentials = new kdbxweb.Credentials(kdbxweb.ProtectedValue.fromString(password.password));
     // try to unlock the local db
@@ -317,7 +317,7 @@ program
   .option('-a --askpass', 'If supplied the user will be prompted for a password, otherwise a random one is generated', false)
   .action(async (dbname, options) => {
     let dbpath = path.join(process.env.HOME, '.config', 'configstore', dbname + '.kdbx');
-    let config = new ConfigStore(`${PKG_NAME}-${dbname}`);
+    let config = new ConfigStore(`${name}-${dbname}`);
     let password = await askPassword('Enter the database password:');
     let credentals = new kdbxweb.Credentials(kdbxweb.ProtectedValue.fromString(password.password));
     // load the db
@@ -393,7 +393,7 @@ program
   .action(async (dbname, options) => {
     const dbpath = path.resolve(`${process.env.HOME}/.config/configstore/${dbname}.kdbx`);
     console.log(dbpath);
-    let config = new ConfigStore(`${PKG_NAME}-${dbname}`, {
+    let config = new ConfigStore(`${name}-${dbname}`, {
       name: dbname,
       syncBucket: options.bucket,
     });
@@ -427,7 +427,7 @@ program
 async function main() {
   console.log(
     chalk.green(
-      figlet.textSync(PKG_NAME, { horizontalLayout: 'full' })
+      figlet.textSync(name, { font: 'Ansi Shadow', horizontalLayout: 'full' })
     )
   );
   program.parseAsync(process.argv);
