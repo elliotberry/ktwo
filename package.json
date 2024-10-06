@@ -1,31 +1,20 @@
 {
-  "name": "kthree",
+  "name": "k2",
   "version": "0.1.2",
   "description": "Simple CLI wrapper around the kdbxweb library of the awesome keeweb!",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/corysabol/ktwo.git"
-  },
-  "keywords": [
-    "keepass2",
-    "keexweb",
-    "cli"
-  ],
-  "author": "Cory Sabol",
-  "license": "MIT",
+  "type": "module",
   "dependencies": {
-    "aws-sdk": "^2.696.0",
-    "chalk": "^4.1.0",
-    "clui": "^0.3.6",
-    "commander": "^7.1.0",
-    "configstore": "^5.0.1",
-    "figlet": "^1.4.0",
-    "inquirer": "^8.0.0",
-    "kdbxweb": "^1.9.0"
+    "@node-rs/argon2": "^2.0.0",
+    "aws-sdk": "^2.1691.0",
+    "chalk": "^5.3.0",
+    "configstore": "^7.0.0",
+    "inquirer": "^11.1.0",
+    "kdbxweb": "^2.1.1",
+    "yargs": "^17.7.2"
   },
   "bin": {
     "ktwo": "./index.js"

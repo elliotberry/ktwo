@@ -1,436 +1,178 @@
 #!/usr/bin/env node
-const fs = require('fs');
-const path = require('path');
-const readline = require('readline');
-const inquirer = require('inquirer');
-const chalk = require('chalk');
-const figlet = require('figlet');
-const kdbxweb = require('kdbxweb');
-const { program } = require('commander');
-const argon2 = require('kdbxweb/test/test-support/argon2');
-const ConfigStore = require('configstore');
-const AWS = require('aws-sdk');
-const s3 = new AWS.S3();
-const {version, name} = require('./package.json')
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import chalk from 'chalk';
+
+import kdbxweb from 'kdbxweb';
+
+import ConfigStore from 'configstore';
+import AWS from 'aws-sdk';
+import yargs from 'yargs/yargs';
+import {hideBin} from 'yargs/helpers';
+import {pullS3, syncS3} from './s3.js';
+import {mergeDb, listEntry, askPassword, getRandomPass} from './db-tools.js';
+import {hash} from '@node-rs/argon2';
 
 
-// hacky use of the test implementation of argon2 found in kdbxweb
-kdbxweb.CryptoEngine.argon2 = argon2;
-
-// TODO: Consider implementing storage provider objects under a common interface to facilitate more sync storage options.
-// it's possible that the simplest implementation of this idea would be to just implement each provider as a function
-// that returns a promise.
-
-/**
- * Pulls a database and its respective configuration file from the given s3 url.
- * @param {string} s3url - the S3 URL to the db key in S3 e.g. s3://mybucket/k2/mydb
- * @return {Promise}
- */
-function pullS3(s3url) {
-  let parts = s3url.split('/'),
-      bucket = parts[2],
-      keyBase = parts.slice(3).reduce((acc, val) => `${acc}/${val}`);
-  let dbKey = `${keyBase}/${parts[4]}.kdbx`,
-      configKey = `${keyBase}/${parts[4]}.json`;
-  let dbPullParams = {
-    Bucket: bucket,
-    Key: dbKey 
-  };
-  let dbPromise = s3.getObject(dbPullParams).promise();
-
-  let configPullParams = {
-    Bucket: bucket,
-    Key: configKey
-  };
-  let configPromise = s3.getObject(configPullParams).promise();
-
-  return Promise.all([dbPromise, configPromise]);
-}
-
-function syncS3(db, config) {
-  // https://docs.aws.amazon.com/AWSJavaScriptSDK/latest/AWS/S3.html#putObject-property
-  let dbUploadParams = {
-    Body: Buffer.from(db),
-    Bucket: config.get('syncBucket').split('/').pop(),
-    Key: `k2/${config.get('name').split('.')[0]}/${config.get('name')}.kdbx`,
-    //ServerSideEncryption: 'AES256'
-    Tagging: "application=k2&type=kdbx4"
-  };
-
-  let configUploadParams = {
-    Body: fs.readFileSync(config.path),
-    Bucket: config.get('syncBucket').split('/').pop(),
-    Key: `k2/${config.get('name').split('.')[0]}/${config.get('name')}.json`,
-    Tagging: "application=k2&type=k2config"
-  };
-
-  let dbUploadPromise = s3.putObject(dbUploadParams).promise();
-  let configUploadPromise = s3.putObject(configUploadParams).promise();
-
-  return Promise.all([dbUploadPromise, configUploadPromise]);
-}
+kdbxweb.CryptoEngine.setArgon2Impl((password, salt,
+  memory, iterations, length, parallelism, type) => {
+  hash(password, {
+      type:type,
+      salt: salt,
+      memoryCost: 19456,
+      timeCost: 2,
+      outputLen: 32,
+      parallelism: 1
+  }).then((hash) => {
+  return Promise.resolve(hash);
+  });
+});
 
 
-/**
- * Handle merging a local and remote version of a database
- * @param {ArrayBuffer} data - database file contents
- * @param {ArrayBuffer} remoteData - remote database file contents
- * @param {KdbxCredentials} credentials - credentials for both databases
- */
-function mergeDb(db, remoteDb) {
-  let editStateBeforeSave = db.getLocalEditState(); // save local editing state (serializable to JSON)
-  db.setLocalEditState(editStateBeforeSave); // assign edit state obtained before save
-  // work with db
-  db.merge(remoteDb); // merge remote into local
-  delete remoteDb; // don't use remoteDb anymore
-  return db;
-  //let saved = await db.save(); // save local db
-  //editStateBeforeSave = db.getLocalEditState(); // save local editing state again
-  //let pushedOk = pushToUpstream(saved); // push db to upstream
-  //if (pushedOk) {
-  //    db.removeLocalEditState(); // clear local editing state
-  //    editStateBeforeSave = null; // and discard it
-  //}
-}
+async function listEntries(dbname, options) {
+  try {
+    const password = await askPassword();
+    const credentials = new kdbxweb.Credentials(kdbxweb.ProtectedValue.fromString(password.password));
+    const dbpath = path.join(process.env.HOME, '.config', 'configstore', `${dbname}.kdbx`);
+    const data = new Uint8Array(await fs.readFile(dbpath));
+    const db = await kdbxweb.Kdbx.load(data.buffer, credentials);
 
-/** 
- * Get the value of a field in an entry, returns the plain text value of kdbx.ProtectedValue
- * @param {KdbxEntry} entry - the entry to retrieve a field value
- * @param {string} fieldName - the name of the entry field to retreive
- * @return {string} - the value in a field or ''
- */
-function entryField(entry, fieldName) {
-  const value = entry.fields[fieldName];
-  const isProtected = value instanceof kdbxweb.ProtectedValue;
-  return (value && isProtected && value.getText()) || value || '';
-}
-
-function listEntry(entry, color) {
-  let password = entry.fields.Password;
-  return  chalk.keyword(color)(
-    `  Title:    ${entryField(entry, 'Title')}\n` +
-    `  UserName: ${entryField(entry, 'UserName')}\n` +
-    `  Password: ${entryField(entry, 'Password')}\n` +
-    `  URL:      ${entryField(entry, 'URL')}\n` +
-    `  Notes:    ${entryField(entry, 'Notes')}\n`
-  );
-}
-
-function ask(prompt, type) {
-  const questions = [
-    {
-      name: 'response',
-      type: type,
-      message: prompt,
-      validate: (value) => {
-        if (value.length) {
-          return true;
-        } else {
-          return prompt
-        }
-      }
-    },
-  ];
-  return inquirer.prompt(questions);
-}
-
-function askPassword(prompt) {
-  const questions = [
-    {
-      name: 'password',
-      type: 'password',
-      message: prompt,
-      validate: function(value) {
-        if (value.length) {
-          return true;
-        } else {
-          return 'Please enter your password.';
-        }
-      }
-    },
-  ];
-  return inquirer.prompt(questions);
-}
-
-program.version(version);
-program
-  .command('list <dbname>')
-  .alias('l')
-  .description('list the entries in the specified database file')
-  .option('-g --group <group>', 'The group to search in')
-  .option('-t --title <title>', 'The title of the entry to list')
-  .option('-a --all', 'List all entries', false)
-  .action(async (dbname, options) => {
-    let password = await askPassword();
-    let credentials = new kdbxweb.Credentials(kdbxweb.ProtectedValue.fromString(password.password));
-    const dbpath = path.join(process.env.HOME, '.config', 'configstore', dbname + '.kdbx'); 
-    const data = new Uint8Array(fs.readFileSync(dbpath));
-    kdbxweb.Kdbx.load(data.buffer, credentials)
-      .then(db => {
-        // TODO: Refactor this ugly ass code, there's surely a cleaner way to filter
-        // the groups and entries...
-
-        db.groups[0].forEach((entry, group) =>{
-          let groupname;
-          if (!options.group && group) {
-            groupname = group.name;
-          } else {
-            groupname = options.group; 
+    db.groups[0].forEach(group => {
+      if (!options.group || options.group === group.name) {
+        console.log(chalk.yellow.bold(group.name));
+        group.entries.forEach(entry => {
+          if ((!options.title || options.title === entry.fields.Title) && (!options.group || options.group === entry.parentGroup.name)) {
+            console.log(listEntry(entry, 'lightblue'));
           }
-          if (group && groupname === group.name) {
-            console.log(
-              chalk.yellow.bold(group.name)
-            );
-          }
-
-          let entrytitle;
-          if (!options.title && entry) {
-            entrytitle = entry.fields.Title;
-          } else {
-            entrytitle = options.title;
-          }
-          if (entry && !options.group) {
-            groupname = entry.parentGroup.name;
-          }
-          if (entry && entrytitle === entry.fields.Title && entry.parentGroup.name === groupname) { 
-            console.log(
-              listEntry(entry, 'lightblue')
-            );
-          } 
         });
-      })
-      .catch(err => console.log(err));
-  });
+      }
+    });
+  } catch (err) {
+    console.error(chalk.red(err));
+  }
+}
 
-program
-  .command('pull <s3path>')
-  .alias('p')
-  .description('used to initialize a client - pulls a database from s3 using a s3 url e.g. s3://my-bucket/k2/dbname')
-  .action(async (s3path, options) => {
-    console.log(
-      chalk.yellow(`pulling DB file and config from ${s3path}`)
-    );
-    pullS3(s3path)
-      .then(([dbData, configData]) => {
-        const dbname = s3path.split('/').pop();
-        const dbPath = path.join(process.env.HOME, '.config', 'configstore', dbname + '.kdbx');
-        const configPath = path.join(process.env.HOME, '.config', 'configstore', 'k2' + dbname + '.json');
-        const config = new ConfigStore(
-          `${name}-${dbname}`,
-          JSON.parse(kdbxweb.ByteUtils.bytesToString(configData.Body))
-        );
-        if (
-          fs.existsSync(dbPath) || 
-          fs.existsSync(configPath)
-        ) {
-          console.log(
-            chalk.yellow('DB already exists, use the sync command instead - k2 sync <dbname>')
-          );
-          return;
-        }
-        console.log(
-          chalk.yellow('writing DB and config to disk...')
-        );
-        fs.writeFileSync(dbPath, dbData.Body);
-        fs.writeFileSync(configPath, configData.Body);
-        console.log(
-          chalk.green('files written!')
-        );
-      })
-      .catch(err => console.log(err));
-  });
+async function pullDatabase(s3path) {
+  try {
+    console.log(chalk.yellow(`Pulling DB file and config from ${s3path}`));
+    const [dbData, configData] = await pullS3(s3path);
+    const dbname = s3path.split('/').pop();
+    const dbPath = path.join(process.env.HOME, '.config', 'configstore', `${dbname}.kdbx`);
+    const configPath = path.join(process.env.HOME, '.config', 'configstore', `k2${dbname}.json`);
 
-program
-  .command('sync <dbname>')
-  .alias('s')
-  .description('manually push a db file to its configured S3 bucket')
-  .option('-s --bucket <bucket>', 'override the configured S3 url with the one supplied to this flag - s3://bucket-name')
-  .action(async (dbname, options) => {
-    if (options.bucket) {
-      console.log(
-        chalk.yellow('-s|--bucket options is not implemented')
-      );
+    if ((await fs.access(dbPath).catch(() => false)) || (await fs.access(configPath).catch(() => false))) {
+      console.log(chalk.yellow('DB already exists, use the sync command instead - k2 sync <dbname>'));
+      return;
     }
-    const dbpath = path.join(process.env.HOME, '.config', 'configstore', dbname + '.kdbx');
+
+    console.log(chalk.yellow('Writing DB and config to disk...'));
+    await fs.writeFile(dbPath, dbData.Body);
+    await fs.writeFile(configPath, configData.Body);
+    console.log(chalk.green('Files written!'));
+  } catch (err) {
+    console.error(chalk.red(err));
+  }
+}
+
+async function syncDatabase(dbname, bucket) {
+  try {
+    if (bucket) {
+      console.log(chalk.yellow('-s|--bucket option is not implemented'));
+    }
+    const dbpath = path.join(process.env.HOME, '.config', 'configstore', `${dbname}.kdbx`);
     const config = new ConfigStore(`${name}-${dbname}`);
-    const db = fs.readFileSync(dbpath);
-    const s3path = `${config.get('syncBucket')}/${name}/${dbname.split('.')[0]}`;
+    const data = new Uint8Array(await fs.readFile(dbpath));
     const password = await askPassword('Enter the database password:');
     const credentials = new kdbxweb.Credentials(kdbxweb.ProtectedValue.fromString(password.password));
-    // try to unlock the local db
-    // load the db
-    console.log(
-      chalk.yellow('Opening local db...')
-    );
-    console.log(s3path);
-    const data = new Uint8Array(fs.readFileSync(dbpath));
-    const dbPromise = kdbxweb.Kdbx.load(data.buffer, credentials);
-    dbPromise.
-      then(db => {
-        // we unlocked the local db
-        const remotePromise = pullS3(s3path);
-        return Promise.all([db, remotePromise]);
-      })
-      .then(([db, remoteRes]) => {
-        // extract the body out of the remoteRes
-        const [dbRemoteRes, configRemoteRes] = remoteRes;
-        const dbRemoteData = new Uint8Array(dbRemoteRes.Body).buffer;
-        const configRemoteData = configRemoteRes.Body;
-        // unlock the remote and do some more complex promise chaining
-        const dbRemoteUnlockedP = kdbxweb.Kdbx.load(dbRemoteData, credentials);
-        return Promise.all([
-          db,
-          dbRemoteUnlockedP,
-          configRemoteData,
-        ]);
-      })
-      .then(([
-        dbLocalUnlocked,
-        dbRemoteUnlocked,
-        configRemoteData,
-      ]) => {
-        // finally we can begin merging things and then upload the results
-        const mergedDb = mergeDb(dbLocalUnlocked, dbRemoteUnlocked);
-        return mergedDb.save();
-      })
-      .then(db => {
-        // write the db contents to disk then upload to s3
-        const data = new Uint8Array(db);
-        fs.writeFileSync(dbpath, data);
-        return syncS3(db, config);
-      })
-      .then(([dbUploadRes, configUploadRes]) => {
-        console.log(dbUploadRes, configUploadRes);
-      })
-      .catch(err => console.log(err, err.stack));
-  })
+    const dbLocalUnlocked = await kdbxweb.Kdbx.load(data.buffer, credentials);
 
-program
-  .command('add <dbname>')
-  .alias('a')
-  .description('add a new entry to the database with an autogenerated password')
-  .option('-g --group <groupname>', 'The group to add the entry to', 'default')
-  .option('-t --title <title>', 'The title of the entry')
-  .option('-u --user <username>', 'The username of the entry')
-  .option('--url <url>', 'The URL of the entry')
-  .option('-n --note <note>', 'A note for the entry')
-  .option('-a --askpass', 'If supplied the user will be prompted for a password, otherwise a random one is generated', false)
-  .action(async (dbname, options) => {
-    let dbpath = path.join(process.env.HOME, '.config', 'configstore', dbname + '.kdbx');
-    let config = new ConfigStore(`${name}-${dbname}`);
-    let password = await askPassword('Enter the database password:');
-    let credentals = new kdbxweb.Credentials(kdbxweb.ProtectedValue.fromString(password.password));
-    // load the db
-    console.log(
-      chalk.yellow('Opening db...')
-    );
-    const data = new Uint8Array(fs.readFileSync(dbpath));
-    let dbPromise = kdbxweb.Kdbx.load(data.buffer, credentals);
-    dbPromise
-      .then(async db => {
-        let password;
-        console.log(
-          chalk.green('Successfully opened db!')
-        );
-        if (options.askpass) {
-          let _password = await askPassword('Enter a password for the entry:');
-          password = _password.password;
-        } else {
-          password = getRandomPass();
-        }
-        password = kdbxweb.ProtectedValue.fromString(password);
-        let group;
-        if (options.group && options.group !== 'default') {
-          // does the group already exist in the db?
-          // if so we just get it
-          db.groups[0].forEach((entry, _group) => {
-            if (_group && _group.name === options.group) {
-              group = _group;
-            }
-          });
-          // the group didn't exist in the db so we create it
-          if (!group) {
-            group = db.createGroup(db.getDefaultGroup(), options.group);
-          }
-        } else {
-          group = db.getDefaultGroup();
-        }
-        let entry = db.createEntry(group);
-        entry.fields.Title = options.title;
-        entry.fields.UserName = options.user;
-        entry.fields.URL = options.url;
-        entry.fields.Password = password;
-        entry.fields.Notes = options.note;
-        console.log(
-          chalk.yellow('entry added...')
-        );
-        console.log(
-          listEntry(entry, 'lightblue')
-        );
-        console.log(
-          chalk.yellow('saving DB...')
-        );
-        db.save()
-          .then(db => {
-            fs.writeFileSync(dbpath, Buffer.from(db));
-            console.log(chalk.green('DB saved!'))
-            // if the config contains a syncBucket path then try to sync the DB to the bucket
-            syncS3(db, config);
-          });
-      })
-      .catch(err => {
-        console.log(
-          chalk.red(err)
-        );
-      });
-  });
+    console.log(chalk.yellow('Opening local db...'));
+    const s3path = `${config.get('syncBucket')}/${name}/${dbname.split('.')[0]}`;
+    const [dbRemoteRes, configRemoteRes] = await pullS3(s3path);
+    const dbRemoteData = new Uint8Array(dbRemoteRes.Body).buffer;
+    const dbRemoteUnlocked = await kdbxweb.Kdbx.load(dbRemoteData, credentials);
+    const mergedDb = await mergeDb(dbLocalUnlocked, dbRemoteUnlocked);
 
-program
-  .command('newdb <dbname>')
-  .alias('n')
-  .description('create a new database file')
-  .option('-s --bucket <bucket>', 'The s3 url to sync the database and config to', '')
-  .action(async (dbname, options) => {
+    console.log(chalk.yellow('Saving DB...'));
+    const dbBuffer = await mergedDb.save();
+    await fs.writeFile(dbpath, Buffer.from(dbBuffer));
+    await syncS3(dbBuffer, config);
+    console.log(chalk.green('DB synced successfully!'));
+  } catch (err) {
+    console.error(chalk.red(err));
+  }
+}
+
+async function addEntry(dbname, options) {
+  try {
+    const dbpath = path.join(process.env.HOME, '.config', 'configstore', `${dbname}.kdbx`);
+    const password = await askPassword('Enter the database password:');
+    const credentials = new kdbxweb.Credentials(kdbxweb.ProtectedValue.fromString(password.password));
+    const data = new Uint8Array(await fs.readFile(dbpath));
+    const db = await kdbxweb.Kdbx.load(data.buffer, credentials);
+
+    console.log(chalk.green('Successfully opened DB!'));
+
+    let passwordValue;
+    if (options.askpass) {
+      const userPass = await askPassword('Enter a password for the entry:');
+      passwordValue = userPass.password;
+    } else {
+      passwordValue = getRandomPass();
+    }
+    const protectedPassword = kdbxweb.ProtectedValue.fromString(passwordValue);
+
+    let group = db.getDefaultGroup();
+    if (options.group && options.group !== 'default') {
+      group = db.groups.find(g => g.name === options.group) || db.createGroup(group, options.group);
+    }
+
+    const entry = db.createEntry(group);
+    entry.fields.Title = options.title;
+    entry.fields.UserName = options.user;
+    entry.fields.URL = options.url;
+    entry.fields.Password = protectedPassword;
+    entry.fields.Notes = options.note;
+
+    console.log(chalk.yellow('Entry added...'));
+    console.log(listEntry(entry, 'lightblue'));
+
+    console.log(chalk.yellow('Saving DB...'));
+    const dbBuffer = await db.save();
+    await fs.writeFile(dbpath, Buffer.from(dbBuffer));
+    console.log(chalk.green('DB saved!'));
+
+    // Sync if configured
+    const config = new ConfigStore(`${name}-${dbname}`);
+    await syncS3(dbBuffer, config);
+  } catch (err) {
+    console.error(chalk.red(err));
+  }
+}
+
+async function createDatabase(dbname, {bucket}) {
+  try {
     const dbpath = path.resolve(`${process.env.HOME}/.config/configstore/${dbname}.kdbx`);
     console.log(dbpath);
-    let config = new ConfigStore(`${name}-${dbname}`, {
+
+    const config = new ConfigStore(`${name}-${dbname}`, {
       name: dbname,
-      syncBucket: options.bucket,
+      syncBucket: bucket,
     });
-    console.log(
-      chalk.yellow(`config file: ${config.path}`)
-    );
-    console.log(
-      chalk.yellow('initializing DB')
-    );
+    console.log(chalk.yellow(`Config file: ${config.path}`));
+    console.log(chalk.yellow('Initializing DB'));
 
-    let password = await askPassword();
-    let credentials = new kdbxweb.Credentials(kdbxweb.ProtectedValue.fromString(password.password));
-    let newDb = kdbxweb.Kdbx.create(credentials, dbname);
-    // write the database file out.
-    newDb.upgrade();
-    newDb.save()
-      .then(db => {
-        fs.writeFileSync(dbpath, Buffer.from(db));
-        console.log(
-          chalk.green(`${dbpath} created successfully!`)
-        );
-      })
-      .catch(err => {
-        console.log(
-          chalk.red(err)
-        );
-      });
-    console.log('');
-  });
+    const password = await askPassword();
+    const credentials = new kdbxweb.Credentials(kdbxweb.ProtectedValue.fromString(password.password));
+    const newDb = kdbxweb.Kdbx.create(credentials, dbname);
+    await newDb.upgrade();
+    const dbBuffer = await newDb.save();
+    await fs.writeFile(dbpath, Buffer.from(dbBuffer));
 
-async function main() {
-  console.log(
-    chalk.green(
-      figlet.textSync(name, { font: 'Ansi Shadow', horizontalLayout: 'full' })
-    )
-  );
-  program.parseAsync(process.argv);
+    console.log(chalk.green(`${dbpath} created successfully!`));
+  } catch (err) {
+    console.error(chalk.red(err));
+  }
 }
-main();
+
 
