@@ -2,9 +2,6 @@ import chalk from 'chalk';
 
 import kdbxweb from 'kdbxweb';
 
-import AWS from 'aws-sdk';
-const s3 = new AWS.S3();
-
 /**
  * Handle merging a local and remote version of a database
  * @param {ArrayBuffer} data - database file contents

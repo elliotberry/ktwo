@@ -1,24 +1,37 @@
-
-import inquirer from 'inquirer';
+import readline from 'node:readline';
+import { promisify } from 'util';
 import AWS from 'aws-sdk';
+
 const s3 = new AWS.S3();
 
 function askPassword(prompt) {
-  const questions = [
-    {
-      name: 'password',
-      type: 'password',
-      message: prompt,
-      validate: function(value) {
-        if (value.length) {
-          return true;
-        } else {
-          return 'Please enter your password.';
-        }
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+      terminal: true
+    });
+
+    rl.stdoutMuted = true;
+
+    rl.question(prompt, (password) => {
+      rl.close();
+      if (password.length) {
+        resolve({ password });
+      } else {
+        console.log('\nPlease enter your password.');
+        resolve(askPassword(prompt)); // Recurse until valid password is entered
       }
-    },
-  ];
-  return inquirer.prompt(questions);
+    });
+
+    rl._writeToOutput = function _writeToOutput(stringToWrite) {
+      if (rl.stdoutMuted) {
+        rl.output.write('*');
+      } else {
+        rl.output.write(stringToWrite);
+      }
+    };
+  });
 }
 
 export default askPassword;
