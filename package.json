@@ -1,5 +1,5 @@
 {
-  "name": "ktwo",
+  "name": "kay-two",
   "version": "0.1.2",
   "description": "Simple CLI wrapper around the kdbxweb library.",
   "main": "index.js",
@@ -11,6 +11,6 @@
     "yargs": "^17.7.2"
   },
   "bin": {
-    "ktwo": "./index.js"
+    "kaytwo": "./index.js"
   }
 }

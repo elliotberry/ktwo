@@ -1,26 +1,23 @@
 #!/usr/bin/env node
+
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import chalk from 'chalk';
-
 import kdbxweb from 'kdbxweb';
-
 import yargs from 'yargs/yargs';
-import {hideBin} from 'yargs/helpers';
+import { hideBin } from 'yargs/helpers';
+import { listEntry, askPassword, getRandomPass } from './db-tools.js';
+import { hash } from '@node-rs/argon2';
 
-import { listEntry, askPassword, getRandomPass} from './db-tools.js';
-import {hash} from '@node-rs/argon2';
-
+// Set Argon2 implementation
 kdbxweb.CryptoEngine.setArgon2Impl((password, salt, memory, iterations, length, parallelism, type) => {
-  hash(password, {
-    type: type,
-    salt: salt,
+  return hash(password, {
+    type,
+    salt,
     memoryCost: 19456,
     timeCost: 2,
     outputLen: 32,
     parallelism: 1,
-  }).then(hash => {
-    return Promise.resolve(hash);
   });
 });
 
@@ -29,42 +26,35 @@ async function listEntries(dbname, options) {
     const password = await askPassword();
     const credentials = new kdbxweb.Credentials(kdbxweb.ProtectedValue.fromString(password.password));
     const dbpath = path.join(process.env.HOME, '.config', 'configstore', `${dbname}.kdbx`);
-    const data = new Uint8Array(await fs.readFile(dbpath));
+    const data = await fs.readFile(dbpath);
     const db = await kdbxweb.Kdbx.load(data.buffer, credentials);
 
-    db.groups[0].forEach(group => {
+    for (const group of db.groups[0].groups) {
       if (!options.group || options.group === group.name) {
         console.log(chalk.yellow.bold(group.name));
-        group.entries.forEach(entry => {
+        for (const entry of group.entries) {
           if ((!options.title || options.title === entry.fields.Title) && (!options.group || options.group === entry.parentGroup.name)) {
             console.log(listEntry(entry, 'lightblue'));
           }
-        });
+        }
       }
-    });
+    }
   } catch (err) {
     console.error(chalk.red(err));
   }
 }
-
 
 async function addEntry(dbname, options) {
   try {
     const dbpath = path.join(process.env.HOME, '.config', 'configstore', `${dbname}.kdbx`);
     const password = await askPassword('Enter the database password:');
     const credentials = new kdbxweb.Credentials(kdbxweb.ProtectedValue.fromString(password.password));
-    const data = new Uint8Array(await fs.readFile(dbpath));
+    const data = await fs.readFile(dbpath);
     const db = await kdbxweb.Kdbx.load(data.buffer, credentials);
 
     console.log(chalk.green('Successfully opened DB!'));
 
-    let passwordValue;
-    if (options.askpass) {
-      const userPass = await askPassword('Enter a password for the entry:');
-      passwordValue = userPass.password;
-    } else {
-      passwordValue = getRandomPass();
-    }
+    const passwordValue = options.askpass ? (await askPassword('Enter a password for the entry:')).password : getRandomPass();
     const protectedPassword = kdbxweb.ProtectedValue.fromString(passwordValue);
 
     let group = db.getDefaultGroup();
@@ -73,56 +63,51 @@ async function addEntry(dbname, options) {
     }
 
     const entry = db.createEntry(group);
-    entry.fields.Title = options.title;
-    entry.fields.UserName = options.user;
-    entry.fields.URL = options.url;
-    entry.fields.Password = protectedPassword;
-    entry.fields.Notes = options.note;
+    Object.assign(entry.fields, {
+      Title: options.title,
+      UserName: options.user,
+      URL: options.url,
+      Password: protectedPassword,
+      Notes: options.note,
+    });
 
     console.log(chalk.yellow('Entry added...'));
     console.log(listEntry(entry, 'lightblue'));
 
-    const dbBuffer = await db.save();
-    await fs.writeFile(dbpath, Buffer.from(dbBuffer));
+    await fs.writeFile(dbpath, Buffer.from(await db.save()));
     console.log(chalk.green('DB saved!'));
-
- 
   } catch (err) {
     console.error(chalk.red(err));
   }
 }
 
-
-
 async function main() {
-  const argv = yargs(hideBin(process.argv))
+  yargs(hideBin(process.argv))
     .scriptName('ktwo')
     .usage('Usage: $0 <command> [options]')
     .command(
       'list <dbname>',
       'List the entries in the specified database file',
-      yargs => {
-        yargs
-          .option('group', {alias: 'g', type: 'string', description: 'The group to search in'})
-          .option('title', {alias: 't', type: 'string', description: 'The title of the entry to list'})
-          .option('all', {alias: 'a', type: 'boolean', description: 'List all entries', default: false});
-      },
-      listEntries,
+      yargs => yargs
+        .option('group', { alias: 'g', type: 'string', description: 'The group to search in' })
+        .option('title', { alias: 't', type: 'string', description: 'The title of the entry to list' })
+        .option('all', { alias: 'a', type: 'boolean', description: 'List all entries', default: false }),
+      listEntries
     )
-  
     .command(
       'add <dbname>',
       'Add a new entry to the database with an autogenerated password',
-      {
-        group: {alias: 'g', type: 'string', default: 'default', description: 'The group to add the entry to'},
-        title: {alias: 't', type: 'string', description: 'The title of the entry'},
-        user: {alias: 'u', type: 'string', description: 'The username of the entry'},
-        url: {type: 'string', description: 'The URL of the entry'},
-        note: {alias: 'n', type: 'string', description: 'A note for the entry'},
-        askpass: {alias: 'a', type: 'boolean', description: 'Prompt for a password instead of generating one', default: false},
-      },
-      addEntry,
+      yargs => yargs
+        .option('group', { alias: 'g', type: 'string', default: 'default', description: 'The group to add the entry to' })
+        .option('title', { alias: 't', type: 'string', description: 'The title of the entry' })
+        .option('user', { alias: 'u', type: 'string', description: 'The username of the entry' })
+        .option('url', { type: 'string', description: 'The URL of the entry' })
+        .option('note', { alias: 'n', type: 'string', description: 'A note for the entry' })
+        .option('askpass', { alias: 'a', type: 'boolean', description: 'Prompt for a password instead of generating one', default: false }),
+      addEntry
     )
-  
-    .help();
+    .help()
+    .argv;
 }
+
+main().catch(console.error);
