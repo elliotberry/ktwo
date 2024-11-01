@@ -1,8 +1,8 @@
 import readline from 'node:readline';
 import { promisify } from 'util';
-import AWS from 'aws-sdk';
 
-const s3 = new AWS.S3();
+
+
 
 function askPassword(prompt) {
   return new Promise((resolve) => {
